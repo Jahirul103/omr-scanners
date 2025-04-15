@@ -1,39 +1,47 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
+from flask import Flask, request, jsonify, send_file
 import cv2
 import numpy as np
-from PIL import Image
 import io
+from PIL import Image
 
-app = FastAPI()
+app = Flask(__name__)
 
-@app.get("/")
-def read_root():
-    return {"message": "Live OMR Scanner is ready!"}
+@app.route('/')
+def home():
+    return "✅ OMR Scanner is running"
 
-@app.post("/scan")
-async def scan_omr(file: UploadFile = File(...)):
-    # Read image bytes
-    contents = await file.read()
-    image = Image.open(io.BytesIO(contents)).convert("RGB")
-    image_np = np.array(image)
+@app.route('/scan', methods=['POST'])
+def scan():
+    if 'image' not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
 
-    # Convert to grayscale
-    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+    file = request.files['image']
+    img_bytes = file.read()
+    npimg = np.frombuffer(img_bytes, np.uint8)
+    image = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
+
+    # Convert to gray
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, thresh = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY_INV)
+    thresh = cv2.threshold(blurred, 0, 255,
+                           cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    # Detect bubbles (contours)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    bubble_count = 0
-    for cnt in contours:
-        (x, y, w, h) = cv2.boundingRect(cnt)
-        # Assume bubble shape
-        if 20 < w < 60 and 20 < h < 60:
-            bubble_count += 1
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
+                               cv2.CHAIN_APPROX_SIMPLE)
 
-    return JSONResponse({
-        "status": "success",
-        "bubbles_detected": bubble_count
-    })
+    for c in cnts:
+        (x, y, w, h) = cv2.boundingRect(c)
+        aspect_ratio = w / float(h)
+        if 20 < w < 50 and 20 < h < 50 and 0.8 < aspect_ratio < 1.2:
+            center = (int(x + w / 2), int(y + h / 2))
+            radius = int((w + h) / 4)
+            cv2.circle(image, center, radius, (255, 0, 0), 2)
+
+    # Convert back to PIL image to send as response
+    _, img_encoded = cv2.imencode('.png', image)
+    return send_file(io.BytesIO(img_encoded.tobytes()), mimetype='image/png')
+
+if __name__ == '__main__':
+    app.run(debug=True)
+
 
